@@ -335,11 +335,17 @@ class MainWindow(QWidget):
         if data.get('status') == 'downloading':
             total_bytes = data.get('total_bytes') or data.get('total_bytes_estimate')
             downloaded = data.get('downloaded_bytes', 0)
+            speed = data.get('speed', 0)  # bytes per second
+            eta = data.get('eta', 0)      # seconds
             if total_bytes:
                 progress = int(downloaded * 100 / total_bytes)
                 self.progress_bar.setValue(progress)
+                # Convert speed to MB/s if available
+                speed_mb = speed / (1024 * 1024) if speed else 0
                 self.status_label.setText(
-                    f"Downloading: {progress}% ({downloaded/1024/1024:.2f} MB of {total_bytes/1024/1024:.2f} MB)"
+                    f"Downloading: {progress}% "
+                    f"({downloaded/1024/1024:.2f} MB of {total_bytes/1024/1024:.2f} MB) | "
+                    f"Speed: {speed_mb:.2f} MB/s | ETA: {eta} sec"
                 )
         elif data.get('status') == 'finished':
             self.progress_bar.setValue(100)
