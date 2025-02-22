@@ -181,7 +181,7 @@ class MainWindow(QWidget):
             if metadata:
                 self.last_metadata = metadata
                 self.update_metadata_text(metadata)
-            # Set quality from config if exists, default to 720p option
+            # Load last selected quality from config, default to 720p if not found
             quality = config.get("quality", "bestvideo[ext=mp4][height<=720]+bestaudio[ext=m4a]")
             index = self.quality_combo.findData(quality)
             if index != -1:
@@ -379,6 +379,11 @@ class MainWindow(QWidget):
         self.fetch_button.setEnabled(enable)
         self.folder_button.setEnabled(enable)
         self.stop_button.setEnabled(not enable)
+
+    def closeEvent(self, event):
+        """Override closeEvent to save configuration upon exit."""
+        self.save_config()
+        event.accept()
 
 if __name__ == '__main__':
     app = QApplication(sys.argv)
