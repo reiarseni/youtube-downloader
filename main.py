@@ -133,6 +133,9 @@ class MainWindow(QWidget):
         self.fetch_button.clicked.connect(self.fetch_info)
         layout.addWidget(self.fetch_button)
 
+        self.videolist_label = QLabel("Video list:")
+        layout.addWidget(self.videolist_label)
+
         # Playlist listbox added below Get Information
         self.playlist_list = QListWidget()
         #self.playlist_list.setPlaceholderText("Playlist videos will appear here...")
@@ -146,6 +149,9 @@ class MainWindow(QWidget):
         self.metadata_text.setReadOnly(True)
         self.metadata_text.setPlaceholderText("Video description and metadata will appear here...")
         layout.addWidget(self.metadata_text)
+
+        self.videolist_label = QLabel("Formats:")
+        layout.addWidget(self.videolist_label)
 
         # List to display available formats (retained for legacy purposes)
         self.format_list = QListWidget()
