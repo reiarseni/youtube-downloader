@@ -93,6 +93,7 @@ class MainWindow(QWidget):
         self.output_folder = None
         self.download_thread = None
         self.info_thread = None       # Thread to fetch complete info in a single request
+        self.download_in_progress = False  # Flag to track active download
         self.setup_ui()
         self.load_config()
 
@@ -328,6 +329,7 @@ class MainWindow(QWidget):
         self.download_thread.finished_signal.connect(self.download_finished)
         self.download_thread.error_signal.connect(self.download_error)
         self.download_thread.start()
+        self.download_in_progress = True  # Set flag on download start
 
     def update_progress(self, data):
         if data.get('status') == 'downloading':
@@ -344,12 +346,14 @@ class MainWindow(QWidget):
             self.status_label.setText("Download finished.")
 
     def download_finished(self):
+        self.download_in_progress = False  # Reset flag on download finish
         QMessageBox.information(self, "Download complete", "The video was downloaded successfully.")
         self.toggle_buttons(True)
         self.progress_bar.setValue(0)
         self.save_config()
 
     def download_error(self, error_msg):
+        self.download_in_progress = False  # Reset flag on download error
         QMessageBox.critical(self, "Download error", f"An error occurred during download:\n{error_msg}")
         self.toggle_buttons(True)
         self.progress_bar.setValue(0)
@@ -362,6 +366,7 @@ class MainWindow(QWidget):
             self.download_thread.terminate()  # Note: terminate() is not ideal for production
             self.download_thread.wait()
             self.download_thread = None
+            self.download_in_progress = False  # Reset flag if stopped
             threads_stopped = True
         if self.info_thread is not None and self.info_thread.isRunning():
             self.info_thread.terminate()
@@ -381,9 +386,24 @@ class MainWindow(QWidget):
         self.stop_button.setEnabled(not enable)
 
     def closeEvent(self, event):
-        """Override closeEvent to save configuration upon exit."""
-        self.save_config()
-        event.accept()
+        print("cosing")
+        # If a download is in progress, show a confirmation dialog.
+        if self.download_in_progress:
+            msg_box = QMessageBox(self)
+            msg_box.setWindowTitle("Confirmation")
+            msg_box.setText("A video is currently downloading.\nAre you sure you want to exit?")
+            accept_button = msg_box.addButton("Accept", QMessageBox.AcceptRole)
+            cancel_button = msg_box.addButton("Cancel", QMessageBox.RejectRole)
+            msg_box.setDefaultButton(cancel_button)
+            msg_box.exec_()
+            if msg_box.clickedButton() == accept_button:
+                self.save_config()
+                event.accept()
+            else:
+                event.ignore()
+        else:
+            self.save_config()
+            event.accept()
 
 if __name__ == '__main__':
     app = QApplication(sys.argv)
