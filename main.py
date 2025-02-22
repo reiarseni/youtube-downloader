@@ -91,6 +91,9 @@ class InfoFetchThread(QThread):
                                            'AppleWebKit/537.36 (KHTML, like Gecko) '
                                            'Chrome/91.0.4472.124 Safari/537.36'},
         }
+        # If URL appears to be a playlist, add extract_flat option
+        if "list=" in self.url:
+            ydl_opts["extract_flat"] = True
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(self.url, download=False)
@@ -111,6 +114,8 @@ class MainWindow(QWidget):
         self.info_thread = None       # Thread to fetch complete info in a single request
         self.download_in_progress = False  # Flag to track active download
         self.last_downloaded_file = None   # Stores the last downloaded file path
+        self.playlist_videos = []          # List to store playlist video objects (each with title and url)
+        self.current_playlist_index = 0    # Current index in the playlist
         self.setup_ui()
         self.load_config()
 
@@ -119,13 +124,18 @@ class MainWindow(QWidget):
 
         # URL input field
         self.url_input = QLineEdit()
-        self.url_input.setPlaceholderText("Enter the YouTube video URL")
+        self.url_input.setPlaceholderText("Enter the YouTube video or playlist URL")
         layout.addWidget(self.url_input)
 
         # Button to fetch complete information (formats and metadata)
         self.fetch_button = QPushButton("Get Information")
         self.fetch_button.clicked.connect(self.fetch_info)
         layout.addWidget(self.fetch_button)
+
+        # Playlist listbox added below Get Information
+        self.playlist_list = QListWidget()
+        #self.playlist_list.setPlaceholderText("Playlist videos will appear here...")
+        layout.addWidget(self.playlist_list)
 
         # Text area to display description and metadata
         self.metadata_label = QLabel("Metadata and description:")
@@ -202,26 +212,39 @@ class MainWindow(QWidget):
             if metadata:
                 self.last_metadata = metadata
                 self.update_metadata_text(metadata)
+            # Load playlist from config if available
+            playlist = config.get("playlist", [])
+            if playlist:
+                self.playlist_videos = playlist
+                self.playlist_list.clear()
+                for video in playlist:
+                    title = video.get("title", "Unknown Title")
+                    item = QListWidgetItem(title)
+                    item.setData(Qt.UserRole, video.get("url", ""))
+                    self.playlist_list.addItem(item)
+                self.current_playlist_index = config.get("current_playlist_index", 0)
+                self.playlist_list.setCurrentRow(self.current_playlist_index)
             # Load last selected quality from config, default to 720p if not found
             quality = config.get("quality", "bestvideo[ext=mp4][height<=720]+bestaudio[ext=m4a]")
             index = self.quality_combo.findData(quality)
             if index != -1:
                 self.quality_combo.setCurrentIndex(index)
             else:
-                # Default to 720p if not found
                 index = self.quality_combo.findData("bestvideo[ext=mp4][height<=720]+bestaudio[ext=m4a]")
                 self.quality_combo.setCurrentIndex(index)
         except Exception as e:
             logging.info("Could not load config.json, using default configuration.")
 
     def save_config(self):
-        """Saves current configuration to config.json, including metadata."""
+        """Saves current configuration to config.json, including metadata and playlist."""
         config = {
             "last_video": self.url_input.text().strip(),
             "last_output_folder": self.output_folder,
             "formats": self.last_formats if self.last_formats else [],
             "metadata": self.last_metadata if self.last_metadata else {},
-            "quality": self.quality_combo.currentData()
+            "quality": self.quality_combo.currentData(),
+            "playlist": self.playlist_videos if self.playlist_videos else [],
+            "current_playlist_index": self.current_playlist_index
         }
         try:
             with open("config.json", "w") as f:
@@ -269,13 +292,14 @@ class MainWindow(QWidget):
         self.metadata_text.setPlainText(text)
 
     def fetch_info(self):
-        """Fetches all video information (formats and metadata) in a single request."""
+        """Fetches all video information (formats/metadata or playlist entries) in a single request."""
         url = self.url_input.text().strip()
         if not url:
             QMessageBox.warning(self, "Error", "Please enter a valid URL.")
             return
 
-        # Clear the format list and metadata area
+        # Clear the playlist, format list, and metadata area
+        self.playlist_list.clear()
         self.format_list.clear()
         self.metadata_text.clear()
         self.status_label.setText("Fetching video information...")
@@ -288,26 +312,58 @@ class MainWindow(QWidget):
         self.info_thread.start()
 
     def process_info(self, info):
-        # Extract formats
-        formats = info.get('formats', [])
-        if not formats:
-            QMessageBox.critical(self, "Error", "No available formats found.")
-            self.status_label.setText("Error fetching information.")
-            self.toggle_buttons(True)
-            return
-
-        self.populate_formats(formats)
-
-        # Extract relevant metadata and update the text area
-        metadata = {
-            "title": info.get("title", ""),
-            "description": info.get("description", ""),
-            "uploader": info.get("uploader", ""),
-            "upload_date": info.get("upload_date", "")
-        }
-        self.last_metadata = metadata
-        self.update_metadata_text(metadata)
-        self.status_label.setText("Information loaded. Select a quality and press 'Download'.")
+        # Check if the info represents a playlist
+        if 'entries' in info:
+            self.playlist_videos = []
+            self.playlist_list.clear()
+            for entry in info.get('entries', []):
+                if entry is None:
+                    continue
+                title = entry.get('title', 'Unknown Title')
+                video_url = entry.get('webpage_url')
+                # If extract_flat was used, webpage_url may be missing; build it from video id
+                if not video_url:
+                    video_id = entry.get('id')
+                    if video_id:
+                        video_url = f"https://www.youtube.com/watch?v={video_id}"
+                    else:
+                        video_url = self.url_input.text()
+                self.playlist_videos.append({"title": title, "url": video_url})
+                item = QListWidgetItem(title)
+                item.setData(Qt.UserRole, video_url)
+                self.playlist_list.addItem(item)
+            self.current_playlist_index = 0
+            if self.playlist_videos:
+                first_video = self.playlist_videos[0]
+                metadata = {
+                    "title": first_video.get("title", ""),
+                    "description": first_video.get("description", ""),
+                    "uploader": first_video.get("uploader", ""),
+                    "upload_date": first_video.get("upload_date", "")
+                }
+                self.last_metadata = metadata
+                self.update_metadata_text(metadata)
+            self.status_label.setText("Playlist loaded. Select a quality and press 'Download'.")
+        else:
+            # Single video case
+            video_title = info.get("title", "Unknown Title")
+            video_url = info.get("webpage_url", self.url_input.text())
+            self.playlist_videos = [{"title": video_title, "url": video_url}]
+            self.playlist_list.clear()
+            item = QListWidgetItem(video_title)
+            item.setData(Qt.UserRole, video_url)
+            self.playlist_list.addItem(item)
+            self.current_playlist_index = 0
+            self.populate_formats(info.get('formats', []))
+            metadata = {
+                "title": info.get("title", ""),
+                "description": info.get("description", ""),
+                "uploader": info.get("uploader", ""),
+                "upload_date": info.get("upload_date", "")
+            }
+            self.last_metadata = metadata
+            self.update_metadata_text(metadata)
+            self.status_label.setText("Information loaded. Select a quality and press 'Download'.")
         self.save_config()
 
     def info_error(self, error_msg):
@@ -345,7 +401,12 @@ class MainWindow(QWidget):
             QMessageBox.warning(self, "Error", "Platform not supported for opening folder.")
 
     def start_download(self):
-        url = self.url_input.text().strip()
+        # Determine the URL to download: if playlist exists, use current playlist video
+        if self.playlist_videos:
+            video = self.playlist_videos[self.current_playlist_index]
+            url = video.get("url")
+        else:
+            url = self.url_input.text().strip()
         if not url:
             QMessageBox.warning(self, "Error", "Enter a valid URL.")
             return
@@ -411,8 +472,18 @@ class MainWindow(QWidget):
                 self.last_downloaded_file = data.get('filename')
 
     def download_finished(self):
+        # If a playlist is loaded and there are more videos, auto-advance to the next video.
+        if self.playlist_videos and self.current_playlist_index < len(self.playlist_videos) - 1:
+            self.current_playlist_index += 1
+            self.playlist_list.setCurrentRow(self.current_playlist_index)
+            next_video = self.playlist_videos[self.current_playlist_index]
+            self.url_input.setText(next_video.get("url"))
+            self.download_in_progress = False
+            # Automatically start download for the next video
+            self.start_download()
+            return
         self.download_in_progress = False  # Reset flag on download finish
-        QMessageBox.information(self, "Download complete", "The video was downloaded successfully.")
+        QMessageBox.information(self, "Download complete", "The video(s) were downloaded successfully.")
         self.toggle_buttons(True)
         self.progress_bar.setValue(0)
         self.save_config()
@@ -428,14 +499,12 @@ class MainWindow(QWidget):
         """Stops any ongoing operation (download or information fetch) cooperatively."""
         threads_stopped = False
         if self.download_thread is not None and self.download_thread.isRunning():
-            # Previously: self.download_thread.terminate()  # Note: terminate() is not ideal for production
-            self.download_thread.cancel()  # Use cooperative cancellation instead
+            self.download_thread.cancel()  # Use cooperative cancellation instead of terminate()
             self.download_thread.wait()
             self.download_thread = None
             self.download_in_progress = False
             threads_stopped = True
         if self.info_thread is not None and self.info_thread.isRunning():
-            # Previously: self.info_thread.terminate()
             self.info_thread.cancel()
             self.info_thread.wait()
             self.info_thread = None
