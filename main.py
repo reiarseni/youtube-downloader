@@ -329,6 +329,24 @@ class MainWindow(QWidget):
         self.download_thread.start()
         self.download_in_progress = True  # Set flag on download start
 
+    def format_eta(self, seconds):
+        """Formats the ETA in a user-friendly format (hours, minutes, seconds)."""
+        try:
+            seconds = int(seconds)
+        except (ValueError, TypeError):
+            return "N/A"
+        if seconds <= 0:
+            return "0s"
+        hours, remainder = divmod(seconds, 3600)
+        minutes, secs = divmod(remainder, 60)
+        parts = []
+        if hours:
+            parts.append(f"{hours}h")
+        if minutes:
+            parts.append(f"{minutes}m")
+        parts.append(f"{secs}s")
+        return " ".join(parts)
+
     def update_progress(self, data):
         if data.get('status') == 'downloading':
             total_bytes = data.get('total_bytes') or data.get('total_bytes_estimate')
@@ -340,10 +358,11 @@ class MainWindow(QWidget):
                 self.progress_bar.setValue(progress)
                 # Convert speed to MB/s if available
                 speed_mb = speed / (1024 * 1024) if speed else 0
+                eta_formatted = self.format_eta(eta)
                 self.status_label.setText(
                     f"Downloading: {progress}% "
                     f"({downloaded/1024/1024:.2f} MB of {total_bytes/1024/1024:.2f} MB) | "
-                    f"Speed: {speed_mb:.2f} MB/s | ETA: {eta} sec"
+                    f"Speed: {speed_mb:.2f} MB/s | ETA: {eta_formatted}"
                 )
         elif data.get('status') == 'finished':
             self.progress_bar.setValue(100)
