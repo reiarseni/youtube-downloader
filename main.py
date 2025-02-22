@@ -222,7 +222,7 @@ class MainWindow(QWidget):
             item = QListWidgetItem(item_text)
             item.setData(Qt.UserRole, format_id)
             self.format_list.addItem(item)
-        self.status_label.setText("Formats loaded. Select one and press 'Download'.")
+        #self.status_label.setText("Formats loaded. Select one and press 'Download'.")
 
     def populate_formats_from_config(self, formats):
         """Populates the QListWidget with formats saved in config."""
@@ -237,7 +237,7 @@ class MainWindow(QWidget):
             item = QListWidgetItem(item_text)
             item.setData(Qt.UserRole, format_id)
             self.format_list.addItem(item)
-        self.status_label.setText("Formats loaded (from config).")
+        #self.status_label.setText("Formats loaded (from config).")
 
     def update_metadata_text(self, metadata):
         """Updates the QTextEdit with formatted metadata and description."""
