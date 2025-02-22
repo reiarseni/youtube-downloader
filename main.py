@@ -2,7 +2,7 @@ import sys
 import os
 import json
 import logging
-import subprocess  # Added for opening folders
+import subprocess  # For opening folders
 from PyQt5.QtWidgets import (QApplication, QWidget, QVBoxLayout, QHBoxLayout,
                              QLineEdit, QPushButton, QListWidget, QListWidgetItem, QLabel, QFileDialog,
                              QProgressBar, QMessageBox, QTextEdit, QComboBox)
@@ -26,6 +26,11 @@ class DownloadThread(QThread):
         self.url = url
         self.quality_format = quality_format  # Selected quality format from the user
         self.output_path = output_path
+        self.cancelled = False  # Cancellation flag
+
+    def cancel(self):
+        """Set the cancellation flag to True to cooperatively stop the download."""
+        self.cancelled = True
 
     def run(self):
         ydl_opts = {
@@ -50,6 +55,9 @@ class DownloadThread(QThread):
             self.error_signal.emit(str(e))
 
     def my_hook(self, d):
+        # Check cancellation flag in the progress hook
+        if self.cancelled:
+            raise Exception("Download cancelled by user")
         if d.get('status') == 'downloading':
             self.progress_signal.emit(d)
         elif d.get('status') == 'finished':
@@ -66,8 +74,15 @@ class InfoFetchThread(QThread):
     def __init__(self, url):
         super().__init__()
         self.url = url
+        self.cancelled = False  # Cancellation flag
+
+    def cancel(self):
+        """Set the cancellation flag to True to cooperatively stop fetching."""
+        self.cancelled = True
 
     def run(self):
+        if self.cancelled:
+            return  # Exit if cancellation was requested before starting
         ydl_opts = {
             'skip_download': True,
             'quiet': True,
@@ -319,8 +334,7 @@ class MainWindow(QWidget):
                 subprocess.Popen(['explorer', '/select,', self.last_downloaded_file])
                 return
             except Exception as e:
-                # Fallback to open folder normally if error occurs
-                pass
+                pass  # Fallback if error occurs
         if sys.platform.startswith('darwin'):
             subprocess.Popen(["open", self.output_folder])
         elif os.name == 'nt':
@@ -411,16 +425,18 @@ class MainWindow(QWidget):
         self.status_label.setText("Download error.")
 
     def stop_operation(self):
-        """Stops any ongoing operation (download or information fetch)."""
+        """Stops any ongoing operation (download or information fetch) cooperatively."""
         threads_stopped = False
         if self.download_thread is not None and self.download_thread.isRunning():
-            self.download_thread.terminate()  # Note: terminate() is not ideal for production
+            # Previously: self.download_thread.terminate()  # Note: terminate() is not ideal for production
+            self.download_thread.cancel()  # Use cooperative cancellation instead
             self.download_thread.wait()
             self.download_thread = None
-            self.download_in_progress = False  # Reset flag if stopped
+            self.download_in_progress = False
             threads_stopped = True
         if self.info_thread is not None and self.info_thread.isRunning():
-            self.info_thread.terminate()
+            # Previously: self.info_thread.terminate()
+            self.info_thread.cancel()
             self.info_thread.wait()
             self.info_thread = None
             threads_stopped = True
