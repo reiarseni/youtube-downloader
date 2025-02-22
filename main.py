@@ -65,15 +65,16 @@ class DownloadThread(QThread):
 
 class InfoFetchThread(QThread):
     """
-    Thread that performs a single request to fetch all video information:
+    Thread that performs a single request to fetch video or playlist information:
     formats, description, and other metadata.
     """
     info_signal = pyqtSignal(dict)
     error_signal = pyqtSignal(str)
 
-    def __init__(self, url):
+    def __init__(self, url, flat=True):
         super().__init__()
         self.url = url
+        self.flat = flat  # If True, perform flat extraction (for playlists); if False, full extraction
         self.cancelled = False  # Cancellation flag
 
     def cancel(self):
@@ -91,8 +92,7 @@ class InfoFetchThread(QThread):
                                            'AppleWebKit/537.36 (KHTML, like Gecko) '
                                            'Chrome/91.0.4472.124 Safari/537.36'},
         }
-        # If URL appears to be a playlist, add extract_flat option
-        if "list=" in self.url:
+        if self.flat and "list=" in self.url:
             ydl_opts["extract_flat"] = True
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -116,6 +116,7 @@ class MainWindow(QWidget):
         self.last_downloaded_file = None   # Stores the last downloaded file path
         self.playlist_videos = []          # List to store playlist video objects (each with title and url)
         self.current_playlist_index = 0    # Current index in the playlist
+        self.full_info_thread = None       # Stores the thread for full metadata fetch
         self.setup_ui()
         self.load_config()
 
@@ -135,6 +136,7 @@ class MainWindow(QWidget):
         # Playlist listbox added below Get Information
         self.playlist_list = QListWidget()
         #self.playlist_list.setPlaceholderText("Playlist videos will appear here...")
+        self.playlist_list.itemDoubleClicked.connect(self.on_playlist_item_double_clicked)
         layout.addWidget(self.playlist_list)
 
         # Text area to display description and metadata
@@ -305,7 +307,7 @@ class MainWindow(QWidget):
         self.status_label.setText("Fetching video information...")
         self.toggle_buttons(False)
 
-        self.info_thread = InfoFetchThread(url)
+        self.info_thread = InfoFetchThread(url, flat=True)
         self.info_thread.info_signal.connect(self.process_info)
         self.info_thread.error_signal.connect(self.info_error)
         self.info_thread.finished.connect(lambda: self.toggle_buttons(True))
@@ -333,16 +335,11 @@ class MainWindow(QWidget):
                 item.setData(Qt.UserRole, video_url)
                 self.playlist_list.addItem(item)
             self.current_playlist_index = 0
+            self.playlist_list.setCurrentRow(self.current_playlist_index)
+            # Automatically fetch full metadata for the first video in the playlist
             if self.playlist_videos:
-                first_video = self.playlist_videos[0]
-                metadata = {
-                    "title": first_video.get("title", ""),
-                    "description": first_video.get("description", ""),
-                    "uploader": first_video.get("uploader", ""),
-                    "upload_date": first_video.get("upload_date", "")
-                }
-                self.last_metadata = metadata
-                self.update_metadata_text(metadata)
+                first_video_url = self.playlist_videos[0].get("url")
+                self.load_video_info(first_video_url)
             self.status_label.setText("Playlist loaded. Select a quality and press 'Download'.")
         else:
             # Single video case
@@ -365,6 +362,36 @@ class MainWindow(QWidget):
             self.update_metadata_text(metadata)
             self.status_label.setText("Information loaded. Select a quality and press 'Download'.")
         self.save_config()
+
+    def load_video_info(self, video_url):
+        """Fetch full metadata/description/formats for a given video URL."""
+        self.status_label.setText("Fetching full video information...")
+        # Store the thread in a member variable to prevent it from being destroyed prematurely
+        self.full_info_thread = InfoFetchThread(video_url, flat=False)
+        self.full_info_thread.info_signal.connect(self.update_video_info)
+        self.full_info_thread.error_signal.connect(self.info_error)
+        self.full_info_thread.finished.connect(lambda: setattr(self, 'full_info_thread', None))
+        self.full_info_thread.start()
+
+    def update_video_info(self, info):
+        """Update metadata, formats, and description based on full video info."""
+        self.populate_formats(info.get('formats', []))
+        metadata = {
+            "title": info.get("title", ""),
+            "description": info.get("description", ""),
+            "uploader": info.get("uploader", ""),
+            "upload_date": info.get("upload_date", "")
+        }
+        self.last_metadata = metadata
+        self.update_metadata_text(metadata)
+        self.status_label.setText("Full video information loaded.")
+
+    def on_playlist_item_double_clicked(self, item):
+        """When a playlist video is double-clicked, fetch its full metadata and update UI."""
+        video_url = item.data(Qt.UserRole)
+        self.current_playlist_index = self.playlist_list.currentRow()
+        self.url_input.setText(video_url)
+        self.load_video_info(video_url)
 
     def info_error(self, error_msg):
         QMessageBox.critical(self, "Error", f"Error fetching information: {error_msg}")
