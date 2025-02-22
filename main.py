@@ -2,6 +2,7 @@ import sys
 import os
 import json
 import logging
+import subprocess  # Added for opening folders
 from PyQt5.QtWidgets import (QApplication, QWidget, QVBoxLayout, QHBoxLayout,
                              QLineEdit, QPushButton, QListWidget, QListWidgetItem, QLabel, QFileDialog,
                              QProgressBar, QMessageBox, QTextEdit, QComboBox)
@@ -94,6 +95,7 @@ class MainWindow(QWidget):
         self.download_thread = None
         self.info_thread = None       # Thread to fetch complete info in a single request
         self.download_in_progress = False  # Flag to track active download
+        self.last_downloaded_file = None   # Stores the last downloaded file path
         self.setup_ui()
         self.load_config()
 
@@ -122,13 +124,16 @@ class MainWindow(QWidget):
         self.format_list = QListWidget()
         layout.addWidget(self.format_list)
 
-        # Output folder selection
+        # Output folder selection with additional Open Folder button
         folder_layout = QHBoxLayout()
         self.folder_label = QLabel("Output folder: (Not selected)")
         self.folder_button = QPushButton("Select Folder")
         self.folder_button.clicked.connect(self.select_folder)
         folder_layout.addWidget(self.folder_label)
         folder_layout.addWidget(self.folder_button)
+        self.open_folder_button = QPushButton("Open Folder")
+        self.open_folder_button.clicked.connect(self.open_folder)
+        folder_layout.addWidget(self.open_folder_button)
         layout.addLayout(folder_layout)
 
         # Quality selection dropdown
@@ -304,6 +309,27 @@ class MainWindow(QWidget):
         else:
             self.output_folder = None
 
+    def open_folder(self):
+        """Opens the download folder. On Windows, if the last downloaded file is known, highlight it."""
+        if not self.output_folder:
+            QMessageBox.warning(self, "Error", "No folder selected.")
+            return
+        if os.name == 'nt' and self.last_downloaded_file:
+            try:
+                subprocess.Popen(['explorer', '/select,', self.last_downloaded_file])
+                return
+            except Exception as e:
+                # Fallback to open folder normally if error occurs
+                pass
+        if sys.platform.startswith('darwin'):
+            subprocess.Popen(["open", self.output_folder])
+        elif os.name == 'nt':
+            os.startfile(self.output_folder)
+        elif os.name == 'posix':
+            subprocess.Popen(["xdg-open", self.output_folder])
+        else:
+            QMessageBox.warning(self, "Error", "Platform not supported for opening folder.")
+
     def start_download(self):
         url = self.url_input.text().strip()
         if not url:
@@ -367,6 +393,8 @@ class MainWindow(QWidget):
         elif data.get('status') == 'finished':
             self.progress_bar.setValue(100)
             self.status_label.setText("Download finished.")
+            if data.get('filename'):
+                self.last_downloaded_file = data.get('filename')
 
     def download_finished(self):
         self.download_in_progress = False  # Reset flag on download finish
