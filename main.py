@@ -4,7 +4,7 @@ import json
 import logging
 from PyQt5.QtWidgets import (QApplication, QWidget, QVBoxLayout, QHBoxLayout,
                              QLineEdit, QPushButton, QListWidget, QListWidgetItem, QLabel, QFileDialog,
-                             QProgressBar, QMessageBox, QTextEdit)
+                             QProgressBar, QMessageBox, QTextEdit, QComboBox)
 from PyQt5.QtCore import QThread, pyqtSignal, Qt
 from PyQt5.QtGui import QIcon
 import yt_dlp
@@ -20,15 +20,15 @@ class DownloadThread(QThread):
     finished_signal = pyqtSignal()
     error_signal = pyqtSignal(str)
 
-    def __init__(self, url, format_id, output_path):
+    def __init__(self, url, quality_format, output_path):
         super().__init__()
         self.url = url
-        self.format_id = format_id
+        self.quality_format = quality_format  # Selected quality format from the user
         self.output_path = output_path
 
     def run(self):
         ydl_opts = {
-            'format': "bestvideo[ext=mp4][height<=720]+bestaudio[ext=m4a]",  # self.format_id, #
+            'format': self.quality_format,  # Now linked to the selected quality option
             'merge_output_format': True,
             'outtmpl': f'{self.output_path}/%(title)s_%(height)sp.%(ext)s',
             'progress_hooks': [self.my_hook],
@@ -117,7 +117,7 @@ class MainWindow(QWidget):
         self.metadata_text.setPlaceholderText("Video description and metadata will appear here...")
         layout.addWidget(self.metadata_text)
 
-        # List to display available formats
+        # List to display available formats (retained for legacy purposes)
         self.format_list = QListWidget()
         layout.addWidget(self.format_list)
 
@@ -129,6 +129,21 @@ class MainWindow(QWidget):
         folder_layout.addWidget(self.folder_label)
         folder_layout.addWidget(self.folder_button)
         layout.addLayout(folder_layout)
+
+        # Quality selection dropdown
+        quality_layout = QHBoxLayout()
+        self.quality_label = QLabel("Select Quality:")
+        self.quality_combo = QComboBox()
+        self.quality_combo.addItem("144p", "bestvideo[ext=mp4][height<=144]+bestaudio[ext=m4a]")
+        self.quality_combo.addItem("240p", "bestvideo[ext=mp4][height<=240]+bestaudio[ext=m4a]")
+        self.quality_combo.addItem("360p", "bestvideo[ext=mp4][height<=360]+bestaudio[ext=m4a]")
+        self.quality_combo.addItem("480p", "bestvideo[ext=mp4][height<=480]+bestaudio[ext=m4a]")
+        self.quality_combo.addItem("720p", "bestvideo[ext=mp4][height<=720]+bestaudio[ext=m4a]")
+        self.quality_combo.addItem("1080p", "bestvideo[ext=mp4][height<=1080]+bestaudio[ext=m4a]")
+        self.quality_combo.addItem("Audio Only", "bestaudio[ext=m4a]")
+        quality_layout.addWidget(self.quality_label)
+        quality_layout.addWidget(self.quality_combo)
+        layout.addLayout(quality_layout)
 
         # Download and Stop buttons
         buttons_layout = QHBoxLayout()
@@ -263,7 +278,7 @@ class MainWindow(QWidget):
         }
         self.last_metadata = metadata
         self.update_metadata_text(metadata)
-        self.status_label.setText("Information loaded. Select a format and press 'Download'.")
+        self.status_label.setText("Information loaded. Select a quality and press 'Download'.")
         self.save_config()
 
     def info_error(self, error_msg):
@@ -290,20 +305,15 @@ class MainWindow(QWidget):
             QMessageBox.warning(self, "Error", "Select an output folder.")
             return
 
-        selected_items = self.format_list.selectedItems()
-        if not selected_items:
-            QMessageBox.warning(self, "Error", "Select a download format.")
-            return
-
-        format_id = selected_items[0].data(Qt.UserRole)
-        if not format_id:
-            QMessageBox.warning(self, "Error", "Could not determine the format_id of the selected item.")
+        quality_format = self.quality_combo.currentData()
+        if not quality_format:
+            QMessageBox.warning(self, "Error", "Select a download quality.")
             return
 
         self.toggle_buttons(False)
         self.status_label.setText("Downloading...")
 
-        self.download_thread = DownloadThread(url, format_id, self.output_folder)
+        self.download_thread = DownloadThread(url, quality_format, self.output_folder)
         self.download_thread.progress_signal.connect(self.update_progress)
         self.download_thread.finished_signal.connect(self.download_finished)
         self.download_thread.error_signal.connect(self.download_error)
