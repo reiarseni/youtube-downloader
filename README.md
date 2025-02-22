@@ -4,16 +4,16 @@ A cross-platform graphical user interface (GUI) built with PyQt5 and `yt-dlp` fo
 
 ## 🔥 Why Use This Tool?
 
-✅ Works with [YouTube Cookies Exporter](https://github.com/reiarseni/youtube-cookies-exporter) to extract cookies from Chrome
-✅ Supports cookies authentication (Fixes authentication issues)
+✅ Works with [YouTube Cookies Exporter](https://github.com/reiarseni/youtube-cookies-exporter) to extract cookies from Chrome  
+✅ Supports cookies authentication (Fixes authentication issues)  
 ✅ Resolves 403 Forbidden errors that prevent video downloads  
 ✅ Supports high-quality downloads by ensuring proper audio-video merging with `ffmpeg`  
 ✅ Cross-platform – Works on Windows, macOS, and Linux  
-✅ User-friendly GUI built with PyQt5 for ease of use
+✅ User-friendly GUI built with PyQt5 for ease of use  
 ✅ Multi-threaded for smooth UI interaction  
-✅ Saves user preferences in `config.json`
+✅ Saves user preferences in `config.json`  
 ✅ Fetch video metadata and available formats  
-✅ Download videos in different resolutions and formats
+✅ Download videos in different resolutions and formats  
 ✅ Set custom output directories for downloaded files  
 
 ---
