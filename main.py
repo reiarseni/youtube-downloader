@@ -181,6 +181,15 @@ class MainWindow(QWidget):
             if metadata:
                 self.last_metadata = metadata
                 self.update_metadata_text(metadata)
+            # Set quality from config if exists, default to 720p option
+            quality = config.get("quality", "bestvideo[ext=mp4][height<=720]+bestaudio[ext=m4a]")
+            index = self.quality_combo.findData(quality)
+            if index != -1:
+                self.quality_combo.setCurrentIndex(index)
+            else:
+                # Default to 720p if not found
+                index = self.quality_combo.findData("bestvideo[ext=mp4][height<=720]+bestaudio[ext=m4a]")
+                self.quality_combo.setCurrentIndex(index)
         except Exception as e:
             logging.info("Could not load config.json, using default configuration.")
 
@@ -190,7 +199,8 @@ class MainWindow(QWidget):
             "last_video": self.url_input.text().strip(),
             "last_output_folder": self.output_folder,
             "formats": self.last_formats if self.last_formats else [],
-            "metadata": self.last_metadata if self.last_metadata else {}
+            "metadata": self.last_metadata if self.last_metadata else {},
+            "quality": self.quality_combo.currentData()
         }
         try:
             with open("config.json", "w") as f:
