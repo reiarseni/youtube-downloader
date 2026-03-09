@@ -3,18 +3,43 @@ import os
 import json
 import logging
 import subprocess  # For opening folders
-from PyQt5.QtWidgets import (QApplication, QWidget, QVBoxLayout, QHBoxLayout,
-                             QLineEdit, QPushButton, QListWidget, QListWidgetItem, QLabel, QFileDialog,
-                             QProgressBar, QMessageBox, QTextEdit, QComboBox)
+from PyQt5.QtWidgets import (
+    QApplication,
+    QWidget,
+    QVBoxLayout,
+    QHBoxLayout,
+    QLineEdit,
+    QPushButton,
+    QListWidget,
+    QListWidgetItem,
+    QLabel,
+    QFileDialog,
+    QProgressBar,
+    QMessageBox,
+    QTextEdit,
+    QComboBox,
+)
 from PyQt5.QtCore import QThread, pyqtSignal, Qt
 from PyQt5.QtGui import QIcon
 import yt_dlp
 
 logging.basicConfig(level=logging.DEBUG)
 
+
 def get_cookie_file_path():
     """Returns the absolute path of the cookies.txt file located in the Downloads folder."""
     return os.path.join(os.path.expanduser("~"), "Downloads", "cookies.txt")
+
+
+def check_cookies_exist():
+    """Check if cookies.txt file exists and warn the user if it doesn't."""
+    cookie_path = get_cookie_file_path()
+    if not os.path.exists(cookie_path):
+        logging.warning(f"Cookies file not found at: {cookie_path}")
+        return False
+    logging.debug(f"Cookies file found at: {cookie_path}")
+    return True
+
 
 class DownloadThread(QThread):
     progress_signal = pyqtSignal(dict)
@@ -34,17 +59,17 @@ class DownloadThread(QThread):
 
     def run(self):
         ydl_opts = {
-            'format': self.quality_format,  # Now linked to the selected quality option
-            'merge_output_format': True,
-            'outtmpl': f'{self.output_path}/%(title)s_%(height)sp.%(ext)s',
-            'progress_hooks': [self.my_hook],
-            # 'noplaylist': True,
-            'cookiefile': get_cookie_file_path(),
-            # 'http_headers': {'User-Agent': 'Mozilla/5.0 ...'},
-            # 'fragment_retries': 'infinite',
-            # 'retries': 3,
-            'verbose': True,
-            'extractor_args': "youtube:player_client=android"  # ios / tv / web_safari / web / android / tv_embedded
+            "format": self.quality_format,
+            "merge_output_format": True,
+            "outtmpl": f"{self.output_path}/%(title)s_%(height)sp.%(ext)s",
+            "progress_hooks": [self.my_hook],
+            "cookiefile": get_cookie_file_path(),
+            "verbose": False,
+            "extractor_args": {"youtube": {"player_client": ["web"]}},
+            "ignoreerrors": True,
+            "nocheckcertificate": True,
+            "retries": 10,
+            "js_runtimes": {"node": {}},
         }
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -58,16 +83,18 @@ class DownloadThread(QThread):
         # Check cancellation flag in the progress hook
         if self.cancelled:
             raise Exception("Download cancelled by user")
-        if d.get('status') == 'downloading':
+        if d.get("status") == "downloading":
             self.progress_signal.emit(d)
-        elif d.get('status') == 'finished':
+        elif d.get("status") == "finished":
             self.progress_signal.emit(d)
+
 
 class InfoFetchThread(QThread):
     """
     Thread that performs a single request to fetch video or playlist information:
     formats, description, and other metadata.
     """
+
     info_signal = pyqtSignal(dict)
     error_signal = pyqtSignal(str)
 
@@ -85,38 +112,50 @@ class InfoFetchThread(QThread):
         if self.cancelled:
             return  # Exit if cancellation was requested before starting
         ydl_opts = {
-            'skip_download': True,
-            'quiet': True,
-            'cookiefile': get_cookie_file_path(),
-            'http_headers': {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
-                                           'AppleWebKit/537.36 (KHTML, like Gecko) '
-                                           'Chrome/91.0.4472.124 Safari/537.36'},
+            "skip_download": True,
+            "quiet": True,
+            "cookiefile": get_cookie_file_path(),
+            "extractor_args": {"youtube": {"player_client": ["web"]}},
+            "ignoreerrors": True,
+            "nocheckcertificate": True,
+            "js_runtimes": {"node": {}},
         }
         if self.flat and "list=" in self.url:
             ydl_opts["extract_flat"] = True
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(self.url, download=False)
+            if info is None:
+                raise Exception(
+                    "No information could be extracted. The video may be unavailable, private, or requires authentication."
+                )
+            if info.get("_type") == "playlist" or "entries" in info:
+                pass
+            elif not info.get("formats"):
+                raise Exception(
+                    "No formats available for this video. It may be unavailable or requires authentication."
+                )
             self.info_signal.emit(info)
         except Exception as e:
             logging.exception("Error fetching information:")
             self.error_signal.emit(str(e))
+
 
 class MainWindow(QWidget):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("YouTube Downloader with yt-dlp")
         self.setWindowIcon(QIcon("icon.png"))
-        self.last_formats = None      # Will store the array of formats obtained
-        self.last_metadata = {}       # Will store metadata (title, description, uploader, etc.)
+        self.last_formats = None  # Will store the array of formats obtained
+        self.last_metadata = {}  # Will store metadata (title, description, uploader, etc.)
         self.output_folder = None
         self.download_thread = None
-        self.info_thread = None       # Thread to fetch complete info in a single request
+        self.info_thread = None  # Thread to fetch complete info in a single request
         self.download_in_progress = False  # Flag to track active download
-        self.last_downloaded_file = None   # Stores the last downloaded file path
-        self.playlist_videos = []          # List to store playlist video objects (each with title and url)
-        self.current_playlist_index = 0    # Current index in the playlist
-        self.full_info_thread = None       # Stores the thread for full metadata fetch
+        self.last_downloaded_file = None  # Stores the last downloaded file path
+        self.playlist_videos = []  # List to store playlist video objects (each with title and url)
+        self.current_playlist_index = 0  # Current index in the playlist
+        self.full_info_thread = None  # Stores the thread for full metadata fetch
         self.setup_ui()
         self.load_config()
 
@@ -138,8 +177,10 @@ class MainWindow(QWidget):
 
         # Playlist listbox added below Get Information
         self.playlist_list = QListWidget()
-        #self.playlist_list.setPlaceholderText("Playlist videos will appear here...")
-        self.playlist_list.itemDoubleClicked.connect(self.on_playlist_item_double_clicked)
+        # self.playlist_list.setPlaceholderText("Playlist videos will appear here...")
+        self.playlist_list.itemDoubleClicked.connect(
+            self.on_playlist_item_double_clicked
+        )
         layout.addWidget(self.playlist_list)
 
         # Text area to display description and metadata
@@ -147,7 +188,9 @@ class MainWindow(QWidget):
         layout.addWidget(self.metadata_label)
         self.metadata_text = QTextEdit()
         self.metadata_text.setReadOnly(True)
-        self.metadata_text.setPlaceholderText("Video description and metadata will appear here...")
+        self.metadata_text.setPlaceholderText(
+            "Video description and metadata will appear here..."
+        )
         layout.addWidget(self.metadata_text)
 
         self.videolist_label = QLabel("Formats:")
@@ -173,13 +216,14 @@ class MainWindow(QWidget):
         quality_layout = QHBoxLayout()
         self.quality_label = QLabel("Select Quality:")
         self.quality_combo = QComboBox()
-        self.quality_combo.addItem("Low 144p", "bestvideo[ext=mp4][height<=144]+bestaudio[ext=m4a]")
-        self.quality_combo.addItem("Low 240p", "bestvideo[ext=mp4][height<=240]+bestaudio[ext=m4a]")
-        self.quality_combo.addItem("Medium 360p", "bestvideo[ext=mp4][height<=360]+bestaudio[ext=m4a]")
-        self.quality_combo.addItem("Medium 480p", "bestvideo[ext=mp4][height<=480]+bestaudio[ext=m4a]")
-        self.quality_combo.addItem("Higth 720p", "bestvideo[ext=mp4][height<=720]+bestaudio[ext=m4a]")
-        self.quality_combo.addItem("Higth 1080p", "bestvideo[ext=mp4][height<=1080]+bestaudio[ext=m4a]")
-        self.quality_combo.addItem("Audio Only", "bestaudio[ext=m4a]")
+        self.quality_combo.addItem("Low 144p", "best[height<=144]")
+        self.quality_combo.addItem("Low 240p", "best[height<=240]")
+        self.quality_combo.addItem("Medium 360p", "best[height<=360]")
+        self.quality_combo.addItem("Medium 480p", "best[height<=480]")
+        self.quality_combo.addItem("High 720p", "best[height<=720]")
+        self.quality_combo.addItem("High 1080p", "best[height<=1080]")
+        self.quality_combo.addItem("Audio Only", "bestaudio")
+        self.quality_combo.addItem("Best Quality", "best")
         quality_layout.addWidget(self.quality_label)
         quality_layout.addWidget(self.quality_combo)
         layout.addLayout(quality_layout)
@@ -233,12 +277,12 @@ class MainWindow(QWidget):
                 self.current_playlist_index = config.get("current_playlist_index", 0)
                 self.playlist_list.setCurrentRow(self.current_playlist_index)
             # Load last selected quality from config, default to 720p if not found
-            quality = config.get("quality", "bestvideo[ext=mp4][height<=720]+bestaudio[ext=m4a]")
+            quality = config.get("quality", "best[height<=720]")
             index = self.quality_combo.findData(quality)
             if index != -1:
                 self.quality_combo.setCurrentIndex(index)
             else:
-                index = self.quality_combo.findData("bestvideo[ext=mp4][height<=720]+bestaudio[ext=m4a]")
+                index = self.quality_combo.findData("best[height<=720]")
                 self.quality_combo.setCurrentIndex(index)
         except Exception as e:
             logging.info("Could not load config.json, using default configuration.")
@@ -252,7 +296,7 @@ class MainWindow(QWidget):
             "metadata": self.last_metadata if self.last_metadata else {},
             "quality": self.quality_combo.currentData(),
             "playlist": self.playlist_videos if self.playlist_videos else [],
-            "current_playlist_index": self.current_playlist_index
+            "current_playlist_index": self.current_playlist_index,
         }
         try:
             with open("config.json", "w") as f:
@@ -265,11 +309,13 @@ class MainWindow(QWidget):
         self.format_list.clear()
         self.last_formats = formats
         for f in formats:
-            format_id = f.get('format_id')
-            ext = f.get('ext')
-            resolution = f.get('resolution') or (str(f.get('height')) if f.get('height') else 'N/A')
-            filesize = f.get('filesize') or 0
-            filesize_str = f"{filesize/1024/1024:.2f} MB" if filesize else "Unknown"
+            format_id = f.get("format_id")
+            ext = f.get("ext")
+            resolution = f.get("resolution") or (
+                str(f.get("height")) if f.get("height") else "N/A"
+            )
+            filesize = f.get("filesize") or 0
+            filesize_str = f"{filesize / 1024 / 1024:.2f} MB" if filesize else "Unknown"
             item_text = f"Ext: {ext} | Resolution: {resolution} | Size: {filesize_str}"
             item = QListWidgetItem(item_text)
             item.setData(Qt.UserRole, format_id)
@@ -279,11 +325,13 @@ class MainWindow(QWidget):
         """Populates the QListWidget with formats saved in config."""
         self.format_list.clear()
         for f in formats:
-            format_id = f.get('format_id')
-            ext = f.get('ext')
-            resolution = f.get('resolution') or (str(f.get('height')) if f.get('height') else 'N/A')
-            filesize = f.get('filesize') or 0
-            filesize_str = f"{filesize/1024/1024:.2f} MB" if filesize else "Unknown"
+            format_id = f.get("format_id")
+            ext = f.get("ext")
+            resolution = f.get("resolution") or (
+                str(f.get("height")) if f.get("height") else "N/A"
+            )
+            filesize = f.get("filesize") or 0
+            filesize_str = f"{filesize / 1024 / 1024:.2f} MB" if filesize else "Unknown"
             item_text = f"Ext: {ext} | Resolution: {resolution} | Size: {filesize_str}"
             item = QListWidgetItem(item_text)
             item.setData(Qt.UserRole, format_id)
@@ -306,6 +354,21 @@ class MainWindow(QWidget):
             QMessageBox.warning(self, "Error", "Please enter a valid URL.")
             return
 
+        # Check if cookies file exists
+        if not check_cookies_exist():
+            cookie_path = get_cookie_file_path()
+            reply = QMessageBox.question(
+                self,
+                "Cookies Not Found",
+                f"The cookies file was not found at:\n{cookie_path}\n\n"
+                "Without cookies, you may encounter errors or be unable to download some videos.\n\n"
+                "Do you want to continue anyway?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            if reply == QMessageBox.No:
+                return
+
         # Clear the playlist, format list, and metadata area
         self.playlist_list.clear()
         self.format_list.clear()
@@ -321,17 +384,17 @@ class MainWindow(QWidget):
 
     def process_info(self, info):
         # Check if the info represents a playlist
-        if 'entries' in info:
+        if "entries" in info:
             self.playlist_videos = []
             self.playlist_list.clear()
-            for entry in info.get('entries', []):
+            for entry in info.get("entries", []):
                 if entry is None:
                     continue
-                title = entry.get('title', 'Unknown Title')
-                video_url = entry.get('webpage_url')
+                title = entry.get("title", "Unknown Title")
+                video_url = entry.get("webpage_url")
                 # If extract_flat was used, webpage_url may be missing; build it from video id
                 if not video_url:
-                    video_id = entry.get('id')
+                    video_id = entry.get("id")
                     if video_id:
                         video_url = f"https://www.youtube.com/watch?v={video_id}"
                     else:
@@ -346,7 +409,9 @@ class MainWindow(QWidget):
             if self.playlist_videos:
                 first_video_url = self.playlist_videos[0].get("url")
                 self.load_video_info(first_video_url)
-            self.status_label.setText("Playlist loaded. Select a quality and press 'Download'.")
+            self.status_label.setText(
+                "Playlist loaded. Select a quality and press 'Download'."
+            )
         else:
             # Single video case
             video_title = info.get("title", "Unknown Title")
@@ -357,16 +422,18 @@ class MainWindow(QWidget):
             item.setData(Qt.UserRole, video_url)
             self.playlist_list.addItem(item)
             self.current_playlist_index = 0
-            self.populate_formats(info.get('formats', []))
+            self.populate_formats(info.get("formats", []))
             metadata = {
                 "title": info.get("title", ""),
                 "description": info.get("description", ""),
                 "uploader": info.get("uploader", ""),
-                "upload_date": info.get("upload_date", "")
+                "upload_date": info.get("upload_date", ""),
             }
             self.last_metadata = metadata
             self.update_metadata_text(metadata)
-            self.status_label.setText("Information loaded. Select a quality and press 'Download'.")
+            self.status_label.setText(
+                "Information loaded. Select a quality and press 'Download'."
+            )
         self.save_config()
 
     def load_video_info(self, video_url):
@@ -376,17 +443,19 @@ class MainWindow(QWidget):
         self.full_info_thread = InfoFetchThread(video_url, flat=False)
         self.full_info_thread.info_signal.connect(self.update_video_info)
         self.full_info_thread.error_signal.connect(self.info_error)
-        self.full_info_thread.finished.connect(lambda: setattr(self, 'full_info_thread', None))
+        self.full_info_thread.finished.connect(
+            lambda: setattr(self, "full_info_thread", None)
+        )
         self.full_info_thread.start()
 
     def update_video_info(self, info):
         """Update metadata, formats, and description based on full video info."""
-        self.populate_formats(info.get('formats', []))
+        self.populate_formats(info.get("formats", []))
         metadata = {
             "title": info.get("title", ""),
             "description": info.get("description", ""),
             "uploader": info.get("uploader", ""),
-            "upload_date": info.get("upload_date", "")
+            "upload_date": info.get("upload_date", ""),
         }
         self.last_metadata = metadata
         self.update_metadata_text(metadata)
@@ -400,7 +469,24 @@ class MainWindow(QWidget):
         self.load_video_info(video_url)
 
     def info_error(self, error_msg):
-        QMessageBox.critical(self, "Error", f"Error fetching information: {error_msg}")
+        error_lower = error_msg.lower()
+        if (
+            "unavailable" in error_lower
+            or "authentication" in error_lower
+            or "not available" in error_lower
+        ):
+            cookie_path = get_cookie_file_path()
+            full_msg = f"Error fetching information: {error_msg}\n\n"
+            full_msg += "This error may be caused by:\n"
+            full_msg += "- Video is private, deleted, or geo-restricted\n"
+            full_msg += "- Cookies are expired or invalid\n\n"
+            full_msg += f"Try updating your cookies at:\n{cookie_path}\n\n"
+            full_msg += "Use a browser extension to export fresh YouTube cookies."
+            QMessageBox.critical(self, "Error", full_msg)
+        else:
+            QMessageBox.critical(
+                self, "Error", f"Error fetching information: {error_msg}"
+            )
         self.status_label.setText("Error fetching information.")
         self.toggle_buttons(True)
 
@@ -418,20 +504,22 @@ class MainWindow(QWidget):
         if not self.output_folder:
             QMessageBox.warning(self, "Error", "No folder selected.")
             return
-        if os.name == 'nt' and self.last_downloaded_file:
+        if os.name == "nt" and self.last_downloaded_file:
             try:
-                subprocess.Popen(['explorer', '/select,', self.last_downloaded_file])
+                subprocess.Popen(["explorer", "/select,", self.last_downloaded_file])
                 return
             except Exception as e:
                 pass  # Fallback if error occurs
-        if sys.platform.startswith('darwin'):
+        if sys.platform.startswith("darwin"):
             subprocess.Popen(["open", self.output_folder])
-        elif os.name == 'nt':
+        elif os.name == "nt":
             os.startfile(self.output_folder)
-        elif os.name == 'posix':
+        elif os.name == "posix":
             subprocess.Popen(["xdg-open", self.output_folder])
         else:
-            QMessageBox.warning(self, "Error", "Platform not supported for opening folder.")
+            QMessageBox.warning(
+                self, "Error", "Platform not supported for opening folder."
+            )
 
     def start_download(self):
         # Determine the URL to download: if playlist exists, use current playlist video
@@ -443,6 +531,21 @@ class MainWindow(QWidget):
         if not url:
             QMessageBox.warning(self, "Error", "Enter a valid URL.")
             return
+
+        # Check if cookies file exists
+        if not check_cookies_exist():
+            cookie_path = get_cookie_file_path()
+            reply = QMessageBox.question(
+                self,
+                "Cookies Not Found",
+                f"The cookies file was not found at:\n{cookie_path}\n\n"
+                "Without cookies, the download may fail with a 403 error.\n\n"
+                "Do you want to continue anyway?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            if reply == QMessageBox.No:
+                return
 
         if not self.output_folder:
             QMessageBox.warning(self, "Error", "Select an output folder.")
@@ -482,11 +585,11 @@ class MainWindow(QWidget):
         return " ".join(parts)
 
     def update_progress(self, data):
-        if data.get('status') == 'downloading':
-            total_bytes = data.get('total_bytes') or data.get('total_bytes_estimate')
-            downloaded = data.get('downloaded_bytes', 0)
-            speed = data.get('speed', 0)  # bytes per second
-            eta = data.get('eta', 0)      # seconds
+        if data.get("status") == "downloading":
+            total_bytes = data.get("total_bytes") or data.get("total_bytes_estimate")
+            downloaded = data.get("downloaded_bytes", 0)
+            speed = data.get("speed", 0)  # bytes per second
+            eta = data.get("eta", 0)  # seconds
             if total_bytes:
                 progress = int(downloaded * 100 / total_bytes)
                 self.progress_bar.setValue(progress)
@@ -495,18 +598,21 @@ class MainWindow(QWidget):
                 eta_formatted = self.format_eta(eta)
                 self.status_label.setText(
                     f"Downloading: {progress}% "
-                    f"({downloaded/1024/1024:.2f} MB of {total_bytes/1024/1024:.2f} MB) | "
+                    f"({downloaded / 1024 / 1024:.2f} MB of {total_bytes / 1024 / 1024:.2f} MB) | "
                     f"Speed: {speed_mb:.2f} MB/s | ETA: {eta_formatted}"
                 )
-        elif data.get('status') == 'finished':
+        elif data.get("status") == "finished":
             self.progress_bar.setValue(100)
             self.status_label.setText("Download finished.")
-            if data.get('filename'):
-                self.last_downloaded_file = data.get('filename')
+            if data.get("filename"):
+                self.last_downloaded_file = data.get("filename")
 
     def download_finished(self):
         # If a playlist is loaded and there are more videos, auto-advance to the next video.
-        if self.playlist_videos and self.current_playlist_index < len(self.playlist_videos) - 1:
+        if (
+            self.playlist_videos
+            and self.current_playlist_index < len(self.playlist_videos) - 1
+        ):
             self.current_playlist_index += 1
             self.playlist_list.setCurrentRow(self.current_playlist_index)
             next_video = self.playlist_videos[self.current_playlist_index]
@@ -516,14 +622,35 @@ class MainWindow(QWidget):
             self.start_download()
             return
         self.download_in_progress = False  # Reset flag on download finish
-        QMessageBox.information(self, "Download complete", "The video(s) were downloaded successfully.")
+        QMessageBox.information(
+            self, "Download complete", "The video(s) were downloaded successfully."
+        )
         self.toggle_buttons(True)
         self.progress_bar.setValue(0)
         self.save_config()
 
     def download_error(self, error_msg):
         self.download_in_progress = False  # Reset flag on download error
-        QMessageBox.critical(self, "Download error", f"An error occurred during download:\n{error_msg}")
+        error_lower = error_msg.lower()
+        if (
+            "403" in error_lower
+            or "forbidden" in error_lower
+            or "authentication" in error_lower
+        ):
+            cookie_path = get_cookie_file_path()
+            full_msg = f"An error occurred during download:\n{error_msg}\n\n"
+            full_msg += "This error is likely caused by:\n"
+            full_msg += "- Cookies are expired or invalid\n"
+            full_msg += "- Video requires authentication\n\n"
+            full_msg += f"Update your cookies at:\n{cookie_path}\n\n"
+            full_msg += "Use a browser extension to export fresh YouTube cookies."
+            QMessageBox.critical(self, "Download error", full_msg)
+        else:
+            QMessageBox.critical(
+                self,
+                "Download error",
+                f"An error occurred during download:\n{error_msg}",
+            )
         self.toggle_buttons(True)
         self.progress_bar.setValue(0)
         self.status_label.setText("Download error.")
@@ -559,7 +686,9 @@ class MainWindow(QWidget):
         if self.download_in_progress:
             msg_box = QMessageBox(self)
             msg_box.setWindowTitle("Confirmation")
-            msg_box.setText("A video is currently downloading.\nAre you sure you want to exit?")
+            msg_box.setText(
+                "A video is currently downloading.\nAre you sure you want to exit?"
+            )
             accept_button = msg_box.addButton("Accept", QMessageBox.AcceptRole)
             cancel_button = msg_box.addButton("Cancel", QMessageBox.RejectRole)
             msg_box.setDefaultButton(cancel_button)
@@ -573,7 +702,8 @@ class MainWindow(QWidget):
             self.save_config()
             event.accept()
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     app = QApplication(sys.argv)
     window = MainWindow()
     window.resize(600, 600)
