@@ -2,13 +2,13 @@ import sys
 import os
 import json
 import logging
+import shutil
 import subprocess  # For opening folders
 from PyQt5.QtWidgets import (
     QApplication,
     QWidget,
     QVBoxLayout,
     QHBoxLayout,
-    QLineEdit,
     QPushButton,
     QListWidget,
     QListWidgetItem,
@@ -29,6 +29,18 @@ logging.basicConfig(level=logging.DEBUG)
 def get_cookie_file_path():
     """Returns the absolute path of the cookies.txt file located in the Downloads folder."""
     return os.path.join(os.path.expanduser("~"), "Downloads", "cookies.txt")
+
+
+def get_js_runtimes():
+    """Returns js_runtimes config for yt-dlp, detecting available runtimes."""
+    runtimes = {}
+    node_path = shutil.which("node")
+    if node_path:
+        runtimes["node"] = {"path": node_path}
+    deno_path = shutil.which("deno")
+    if deno_path:
+        runtimes["deno"] = {"path": deno_path}
+    return runtimes if runtimes else {"node": {}}
 
 
 def check_cookies_exist():
@@ -60,16 +72,21 @@ class DownloadThread(QThread):
     def run(self):
         ydl_opts = {
             "format": self.quality_format,
-            "merge_output_format": True,
+            "merge_output_format": "mp4",
             "outtmpl": f"{self.output_path}/%(title)s_%(height)sp.%(ext)s",
             "progress_hooks": [self.my_hook],
             "cookiefile": get_cookie_file_path(),
             "verbose": False,
-            "extractor_args": {"youtube": {"player_client": ["web"]}},
             "ignoreerrors": True,
             "nocheckcertificate": True,
             "retries": 10,
-            "js_runtimes": {"node": {}},
+            "js_runtimes": get_js_runtimes(),
+            # Download the Spanish subtitle only if available, preferring the
+            # official one and falling back to the auto-generated (yt-dlp's
+            # process_subtitles merges them with manual subs taking precedence).
+            "writesubtitles": True,
+            "writeautomaticsub": True,
+            "subtitleslangs": ["es"],
         }
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -115,10 +132,9 @@ class InfoFetchThread(QThread):
             "skip_download": True,
             "quiet": True,
             "cookiefile": get_cookie_file_path(),
-            "extractor_args": {"youtube": {"player_client": ["web"]}},
             "ignoreerrors": True,
             "nocheckcertificate": True,
-            "js_runtimes": {"node": {}},
+            "js_runtimes": get_js_runtimes(),
         }
         if self.flat and "list=" in self.url:
             ydl_opts["extract_flat"] = True
@@ -155,6 +171,8 @@ class MainWindow(QWidget):
         self.last_downloaded_file = None  # Stores the last downloaded file path
         self.playlist_videos = []  # List to store playlist video objects (each with title and url)
         self.current_playlist_index = 0  # Current index in the playlist
+        self.download_queue = []  # URLs (one per memo line) to download sequentially
+        self.queue_index = 0  # Current position within download_queue
         self.full_info_thread = None  # Stores the thread for full metadata fetch
         self.setup_ui()
         self.load_config()
@@ -162,9 +180,13 @@ class MainWindow(QWidget):
     def setup_ui(self):
         layout = QVBoxLayout()
 
-        # URL input field
-        self.url_input = QLineEdit()
-        self.url_input.setPlaceholderText("Enter the YouTube video or playlist URL")
+        # URL input field (multi-line: one video or playlist URL per line)
+        self.url_input = QTextEdit()
+        self.url_input.setPlaceholderText(
+            "Enter one YouTube video or playlist URL per line.\n"
+            "All of them will be downloaded sequentially."
+        )
+        self.url_input.setMaximumHeight(110)
         layout.addWidget(self.url_input)
 
         # Button to fetch complete information (formats and metadata)
@@ -216,14 +238,7 @@ class MainWindow(QWidget):
         quality_layout = QHBoxLayout()
         self.quality_label = QLabel("Select Quality:")
         self.quality_combo = QComboBox()
-        self.quality_combo.addItem("Low 144p", "best[height<=144]")
-        self.quality_combo.addItem("Low 240p", "best[height<=240]")
-        self.quality_combo.addItem("Medium 360p", "best[height<=360]")
-        self.quality_combo.addItem("Medium 480p", "best[height<=480]")
-        self.quality_combo.addItem("High 720p", "best[height<=720]")
-        self.quality_combo.addItem("High 1080p", "best[height<=1080]")
-        self.quality_combo.addItem("Audio Only", "bestaudio")
-        self.quality_combo.addItem("Best Quality", "best")
+        self.set_generic_quality_options()
         quality_layout.addWidget(self.quality_label)
         quality_layout.addWidget(self.quality_combo)
         layout.addLayout(quality_layout)
@@ -252,7 +267,7 @@ class MainWindow(QWidget):
         try:
             with open("config.json", "r") as f:
                 config = json.load(f)
-            self.url_input.setText(config.get("last_video", ""))
+            self.url_input.setPlainText(config.get("last_video", ""))
             self.output_folder = config.get("last_output_folder", None)
             if self.output_folder:
                 self.folder_label.setText(f"Output folder: {self.output_folder}")
@@ -276,13 +291,19 @@ class MainWindow(QWidget):
                     self.playlist_list.addItem(item)
                 self.current_playlist_index = config.get("current_playlist_index", 0)
                 self.playlist_list.setCurrentRow(self.current_playlist_index)
-            # Load last selected quality from config, default to 720p if not found
-            quality = config.get("quality", "best[height<=720]")
-            index = self.quality_combo.findData(quality)
-            if index != -1:
-                self.quality_combo.setCurrentIndex(index)
+            # Rebuild quality options matching the saved context before restoring
+            # the selection: video-specific for a single video, generic otherwise.
+            if len(playlist) <= 1 and formats:
+                self.set_video_quality_options(formats)
             else:
-                index = self.quality_combo.findData("best[height<=720]")
+                self.set_generic_quality_options()
+            # Load last selected quality from config, default to 720p if not found
+            default_quality = self._video_format(720)
+            quality = config.get("quality", default_quality)
+            index = self.quality_combo.findData(quality)
+            if index == -1:
+                index = self.quality_combo.findData(default_quality)
+            if index != -1:
                 self.quality_combo.setCurrentIndex(index)
         except Exception as e:
             logging.info("Could not load config.json, using default configuration.")
@@ -290,7 +311,7 @@ class MainWindow(QWidget):
     def save_config(self):
         """Saves current configuration to config.json, including metadata and playlist."""
         config = {
-            "last_video": self.url_input.text().strip(),
+            "last_video": self.url_input.toPlainText().strip(),
             "last_output_folder": self.output_folder,
             "formats": self.last_formats if self.last_formats else [],
             "metadata": self.last_metadata if self.last_metadata else {},
@@ -303,6 +324,69 @@ class MainWindow(QWidget):
                 json.dump(config, f, indent=4)
         except Exception as e:
             logging.error("Error saving configuration: %s", e)
+
+    def get_urls(self):
+        """Returns the list of non-empty, stripped URLs entered in the memo (one per line)."""
+        return [
+            line.strip()
+            for line in self.url_input.toPlainText().splitlines()
+            if line.strip()
+        ]
+
+    # Format selectors prefer the Spanish audio track when the video offers it,
+    # falling back gracefully to the default audio (and to progressive formats).
+    AUDIO_ONLY_FORMAT = "ba[language^=es]/ba"
+    BEST_FORMAT = "bv*+ba[language^=es]/bv*+ba/b"
+
+    @staticmethod
+    def _video_format(height):
+        """Format selector for a height cap, preferring Spanish audio if available."""
+        return (
+            f"bv*[height<={height}]+ba[language^=es]/"
+            f"bv*[height<={height}]+ba/b[height<={height}]"
+        )
+
+    def set_generic_quality_options(self):
+        """Loads the fixed, video-agnostic quality list (used for playlists)."""
+        current = self.quality_combo.currentData()
+        self.quality_combo.clear()
+        for label, height in [
+            ("Low 144p", 144),
+            ("Low 240p", 240),
+            ("Medium 360p", 360),
+            ("Medium 480p", 480),
+            ("High 720p", 720),
+            ("High 1080p", 1080),
+        ]:
+            self.quality_combo.addItem(label, self._video_format(height))
+        self.quality_combo.addItem("Audio Only", self.AUDIO_ONLY_FORMAT)
+        self.quality_combo.addItem("Best Quality", self.BEST_FORMAT)
+        self._restore_quality_selection(current)
+
+    def set_video_quality_options(self, formats):
+        """Builds the quality list from the resolutions actually available for a single video."""
+        current = self.quality_combo.currentData()
+        heights = sorted(
+            {f.get("height") for f in formats if f.get("height")}
+        )
+        if not heights:
+            # No video resolutions found (e.g. audio-only source); fall back to generic.
+            self.set_generic_quality_options()
+            return
+        self.quality_combo.clear()
+        for height in heights:
+            self.quality_combo.addItem(f"{height}p", self._video_format(height))
+        self.quality_combo.addItem("Audio Only", self.AUDIO_ONLY_FORMAT)
+        self.quality_combo.addItem("Best Quality", self.BEST_FORMAT)
+        self._restore_quality_selection(current)
+
+    def _restore_quality_selection(self, quality_data):
+        """Reselects a previously chosen quality if it is still available."""
+        if quality_data is None:
+            return
+        index = self.quality_combo.findData(quality_data)
+        if index != -1:
+            self.quality_combo.setCurrentIndex(index)
 
     def populate_formats(self, formats):
         """Populates the format list in the QListWidget."""
@@ -348,11 +432,12 @@ class MainWindow(QWidget):
         self.metadata_text.setPlainText(text)
 
     def fetch_info(self):
-        """Fetches all video information (formats/metadata or playlist entries) in a single request."""
-        url = self.url_input.text().strip()
-        if not url:
+        """Fetches information for the first URL in the memo (preview/metadata/quality)."""
+        urls = self.get_urls()
+        if not urls:
             QMessageBox.warning(self, "Error", "Please enter a valid URL.")
             return
+        url = urls[0]
 
         # Check if cookies file exists
         if not check_cookies_exist():
@@ -398,13 +483,15 @@ class MainWindow(QWidget):
                     if video_id:
                         video_url = f"https://www.youtube.com/watch?v={video_id}"
                     else:
-                        video_url = self.url_input.text()
+                        video_url = (self.get_urls() or [""])[0]
                 self.playlist_videos.append({"title": title, "url": video_url})
                 item = QListWidgetItem(title)
                 item.setData(Qt.UserRole, video_url)
                 self.playlist_list.addItem(item)
             self.current_playlist_index = 0
             self.playlist_list.setCurrentRow(self.current_playlist_index)
+            # Playlists keep a single, general quality applied to every video
+            self.set_generic_quality_options()
             # Automatically fetch full metadata for the first video in the playlist
             if self.playlist_videos:
                 first_video_url = self.playlist_videos[0].get("url")
@@ -415,7 +502,7 @@ class MainWindow(QWidget):
         else:
             # Single video case
             video_title = info.get("title", "Unknown Title")
-            video_url = info.get("webpage_url", self.url_input.text())
+            video_url = info.get("webpage_url", (self.get_urls() or [""])[0])
             self.playlist_videos = [{"title": video_title, "url": video_url}]
             self.playlist_list.clear()
             item = QListWidgetItem(video_title)
@@ -423,6 +510,12 @@ class MainWindow(QWidget):
             self.playlist_list.addItem(item)
             self.current_playlist_index = 0
             self.populate_formats(info.get("formats", []))
+            # Several URLs in the memo are a batch: keep one general quality.
+            # A single video offers only the resolutions it actually has.
+            if len(self.get_urls()) > 1:
+                self.set_generic_quality_options()
+            else:
+                self.set_video_quality_options(info.get("formats", []))
             metadata = {
                 "title": info.get("title", ""),
                 "description": info.get("description", ""),
@@ -465,7 +558,7 @@ class MainWindow(QWidget):
         """When a playlist video is double-clicked, fetch its full metadata and update UI."""
         video_url = item.data(Qt.UserRole)
         self.current_playlist_index = self.playlist_list.currentRow()
-        self.url_input.setText(video_url)
+        # Preview only: do not overwrite the memo, which holds the download list.
         self.load_video_info(video_url)
 
     def info_error(self, error_msg):
@@ -522,13 +615,10 @@ class MainWindow(QWidget):
             )
 
     def start_download(self):
-        # Determine the URL to download: if playlist exists, use current playlist video
-        if self.playlist_videos:
-            video = self.playlist_videos[self.current_playlist_index]
-            url = video.get("url")
-        else:
-            url = self.url_input.text().strip()
-        if not url:
+        # Build the download queue from the memo: one URL per line, downloaded in order.
+        # A playlist URL is handled by yt-dlp itself (it downloads all of its items).
+        urls = self.get_urls()
+        if not urls:
             QMessageBox.warning(self, "Error", "Enter a valid URL.")
             return
 
@@ -551,13 +641,23 @@ class MainWindow(QWidget):
             QMessageBox.warning(self, "Error", "Select an output folder.")
             return
 
-        quality_format = self.quality_combo.currentData()
-        if not quality_format:
+        if not self.quality_combo.currentData():
             QMessageBox.warning(self, "Error", "Select a download quality.")
             return
 
+        self.download_queue = urls
+        self.queue_index = 0
         self.toggle_buttons(False)
-        self.status_label.setText("Downloading...")
+        self._download_next_in_queue()
+
+    def _download_next_in_queue(self):
+        """Starts the download of the current queue item."""
+        url = self.download_queue[self.queue_index]
+        quality_format = self.quality_combo.currentData()
+        self.progress_bar.setValue(0)
+        self.status_label.setText(
+            f"Downloading {self.queue_index + 1} of {len(self.download_queue)}..."
+        )
 
         self.download_thread = DownloadThread(url, quality_format, self.output_folder)
         self.download_thread.progress_signal.connect(self.update_progress)
@@ -608,20 +708,12 @@ class MainWindow(QWidget):
                 self.last_downloaded_file = data.get("filename")
 
     def download_finished(self):
-        # If a playlist is loaded and there are more videos, auto-advance to the next video.
-        if (
-            self.playlist_videos
-            and self.current_playlist_index < len(self.playlist_videos) - 1
-        ):
-            self.current_playlist_index += 1
-            self.playlist_list.setCurrentRow(self.current_playlist_index)
-            next_video = self.playlist_videos[self.current_playlist_index]
-            self.url_input.setText(next_video.get("url"))
-            self.download_in_progress = False
-            # Automatically start download for the next video
-            self.start_download()
+        self.download_in_progress = False
+        # If there are more URLs queued, automatically download the next one.
+        if self.queue_index < len(self.download_queue) - 1:
+            self.queue_index += 1
+            self._download_next_in_queue()
             return
-        self.download_in_progress = False  # Reset flag on download finish
         QMessageBox.information(
             self, "Download complete", "The video(s) were downloaded successfully."
         )
